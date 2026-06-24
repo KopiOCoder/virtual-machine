@@ -1,7 +1,7 @@
 /*
  * Virtual Machine Implementation
  * Architecture: 8-bit signed registers (R0–R7), byte-addressable memory
- * Supported Instructions: MOV, ADD, SUB, MUL, DIV, IN, OUT, SHL, SHR
+ * Supported Instructions: MOV, ADD, SUB, MUL, DIV, INC, DEC, IN, OUT, SHL, SHR, PUSH, POP
  */
 
 #include <iostream>
@@ -18,6 +18,8 @@
 static const int NUM_REGISTERS  = 8;
 static const int MEMORY_SIZE    = 256;   // bytes
 static const int MAX_PROGRAM    = 512;   // max instructions
+static const int STACK_START    = 56;    // stack base address
+static const int STACK_SIZE     = 8;     // stack size in bytes
 
 // ─────────────────────────────────────────────
 //  Register  (base)
@@ -206,8 +208,9 @@ public:
     FlagRegister    flags;
     Memory          memory;
     int             PC;     // program counter (instruction index)
+    int             SI;     // stack index (register)
 
-    CPU() : PC(0) {
+    CPU() : PC(0), SI(0) {
         for (int i = 0; i < NUM_REGISTERS; ++i)
             reg[i].setIndex(i);
     }
@@ -227,6 +230,9 @@ public:
     void setMemVal(int addr, unsigned char v) {
         memory.writeByte(addr, v);
     }
+
+    int getSI() const { return SI; }
+    void setSI(int s) { SI = s; }
 
     void dumpRegisters() const {
         for (int i = 0; i < NUM_REGISTERS; ++i)
@@ -413,8 +419,86 @@ public:
 };
 
 // ─────────────────────────────────────────────
-//  Runner  –  loads program text, decodes, and executes
+//  IncDecInstruction  (INC, DEC)
 // ─────────────────────────────────────────────
+enum class IncDecOp { INC, DEC };
+
+class IncDecInstruction : public Instruction {
+private:
+    IncDecOp op;
+
+public:
+    explicit IncDecInstruction(IncDecOp o) : op(o) {}
+
+    void execute(CPU& cpu) override {
+        if (dst.type != OperandType::REGISTER) {
+            std::cerr << "INCDEC: destination must be a register\n";
+            return;
+        }
+        signed char val = cpu.getRegVal(dst.regIndex);
+        int result = static_cast<int>(val);
+
+        if (op == IncDecOp::INC)
+            result += 1;
+        else
+            result -= 1;
+
+        // clamp to 8-bit signed
+        if (result > 127)  result = 127;
+        if (result < -128) result = -128;
+
+        cpu.flags.updateGeneric(result);
+        cpu.setRegVal(dst.regIndex, static_cast<signed char>(result));
+    }
+
+    const char* name() const override { return (op == IncDecOp::INC) ? "INC" : "DEC"; }
+};
+
+// ─────────────────────────────────────────────
+//  PushInstruction  (PUSH)
+// ─────────────────────────────────────────────
+class PushInstruction : public Instruction {
+public:
+    void execute(CPU& cpu) override {
+        if (dst.type != OperandType::REGISTER) {
+            std::cerr << "PUSH: operand must be a register\n";
+            return;
+        }
+        if (cpu.getSI() >= STACK_SIZE) {
+            std::cerr << "Stack overflow!\n";
+            return;
+        }
+        signed char val = cpu.getRegVal(dst.regIndex);
+        int addr = STACK_START + cpu.getSI();
+        cpu.setMemVal(addr, static_cast<unsigned char>(val));
+        cpu.setSI(cpu.getSI() + 1);
+    }
+
+    const char* name() const override { return "PUSH"; }
+};
+
+// ─────────────────────────────────────────────
+//  PopInstruction  (POP)
+// ─────────────────────────────────────────────
+class PopInstruction : public Instruction {
+public:
+    void execute(CPU& cpu) override {
+        if (dst.type != OperandType::REGISTER) {
+            std::cerr << "POP: operand must be a register\n";
+            return;
+        }
+        if (cpu.getSI() <= 0) {
+            std::cerr << "Stack underflow! Cannot pop from empty stack.\n";
+            return;
+        }
+        cpu.setSI(cpu.getSI() - 1);
+        int addr = STACK_START + cpu.getSI();
+        unsigned char val = cpu.getMemVal(addr);
+        cpu.setRegVal(dst.regIndex, static_cast<signed char>(val));
+    }
+
+    const char* name() const override { return "POP"; }
+};
 
 // Simple string helpers (no STL string functions used beyond basic ops)
 static void strToUpper(char* s) {
@@ -591,6 +675,34 @@ private:
             ShiftInstruction* instr = new ShiftInstruction(ShiftOp::SHR);
             instr->setDst(parseOperand(tokens[1]));
             instr->setSrc(parseOperand(nTokens > 2 ? tokens[2] : ""));
+            return instr;
+        }
+
+        // ── INC ──────────────────────────────
+        if (strcmp(mnemonic, "INC") == 0) {
+            IncDecInstruction* instr = new IncDecInstruction(IncDecOp::INC);
+            instr->setDst(parseOperand(tokens[1]));
+            return instr;
+        }
+
+        // ── DEC ──────────────────────────────
+        if (strcmp(mnemonic, "DEC") == 0) {
+            IncDecInstruction* instr = new IncDecInstruction(IncDecOp::DEC);
+            instr->setDst(parseOperand(tokens[1]));
+            return instr;
+        }
+
+        // ── PUSH ─────────────────────────────
+        if (strcmp(mnemonic, "PUSH") == 0) {
+            PushInstruction* instr = new PushInstruction();
+            instr->setDst(parseOperand(tokens[1]));
+            return instr;
+        }
+
+        // ── POP ──────────────────────────────
+        if (strcmp(mnemonic, "POP") == 0) {
+            PopInstruction* instr = new PopInstruction();
+            instr->setDst(parseOperand(tokens[1]));
             return instr;
         }
 
@@ -797,9 +909,122 @@ int main(int argc, char* argv[]) {
         std::cout << "\n";
     }
 
-    std::cout << "==============================\n";
-    std::cout << "  Demo complete.\n";
-    std::cout << "  Usage: " << argv[0] << " <program.asm>\n";
-    std::cout << "==============================\n";
-    return 0;
+    // ── Test 7: INC / DEC ──────────────────────
+    {
+        std::cout << "-- Test 7: INC / DEC --\n";
+        Runner r;
+        r.loadString(
+            "MOV R0, 5\n"
+            "INC R0\n"       // R0 = 6
+            "OUT R0\n"
+            "DEC R0\n"       // R0 = 5
+            "OUT R0\n"
+            "DEC R0\n"       // R0 = 4
+            "OUT R0\n"
+        );
+        r.run();
+        r.dumpRegisters();
+        r.dumpFlags();
+        std::cout << "\n";
+    }
+
+    // ── Test 8: INC overflow ───────────────────
+    {
+        std::cout << "-- Test 8: INC overflow --\n";
+        Runner r;
+        r.loadString(
+            "MOV R0, 127\n"
+            "INC R0\n"       // 128 clamped to 127, OF set
+            "OUT R0\n"
+        );
+        r.run();
+        r.dumpRegisters();
+        r.dumpFlags();
+        std::cout << "\n";
+    }
+
+    // ── Test 9: DEC underflow ──────────────────
+    {
+        std::cout << "-- Test 9: DEC underflow --\n";
+        Runner r;
+        r.loadString(
+            "MOV R0, -128\n"
+            "DEC R0\n"       // -129 clamped to -128, UF set
+            "OUT R0\n"
+        );
+        r.run();
+        r.dumpRegisters();
+        r.dumpFlags();
+        std::cout << "\n";
+    }
+
+    // ── Test 10: PUSH single value ──────────────
+    {
+        std::cout << "-- Test 10: PUSH single value --\n";
+        Runner r;
+        r.loadString(
+            "MOV R0, 42\n"
+            "PUSH R0\n"
+        );
+        r.run();
+        std::cout << "Stack after PUSH: ";
+        r.dumpMemory(56, 63);
+        std::cout << "\n";
+    }
+
+    // ── Test 11: PUSH and POP ──────────────────
+    {
+        std::cout << "-- Test 11: PUSH and POP --\n";
+        Runner r;
+        r.loadString(
+            "MOV R0, 42\n"
+            "PUSH R0\n"
+            "MOV R1, 10\n"
+            "POP R1\n"       // R1 should now be 42
+            "OUT R1\n"
+        );
+        r.run();
+        r.dumpRegisters();
+        std::cout << "\n";
+    }
+
+    // ── Test 12: Multiple PUSH and POP ─────────
+    {
+        std::cout << "-- Test 12: Multiple PUSH and POP --\n";
+        Runner r;
+        r.loadString(
+            "MOV R0, 10\n"
+            "MOV R1, 20\n"
+            "MOV R2, 30\n"
+            "PUSH R0\n"
+            "PUSH R1\n"
+            "PUSH R2\n"
+            "POP R3\n"       // R3 = 30
+            "OUT R3\n"
+            "POP R4\n"       // R4 = 20
+            "OUT R4\n"
+            "POP R5\n"       // R5 = 10
+            "OUT R5\n"
+        );
+        r.run();
+        r.dumpRegisters();
+        std::cout << "\n";
+    }
+
+    // ── Test 13: Stack with INC/DEC ────────────
+    {
+        std::cout << "-- Test 13: Stack with INC/DEC --\n";
+        Runner r;
+        r.loadString(
+            "MOV R0, 5\n"
+            "INC R0\n"       // R0 = 6
+            "PUSH R0\n"
+            "MOV R0, 100\n"
+            "POP R0\n"       // R0 = 6 (from stack)
+            "OUT R0\n"
+        );
+        r.run();
+        r.dumpRegisters();
+        std::cout << "\n";
+    }
 }
