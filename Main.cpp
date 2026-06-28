@@ -419,7 +419,7 @@ public:
 };
 
 // ─────────────────────────────────────────────
-//  IncDecInstruction  (INC, DEC)
+//  IncDecInstruction  (INC, DEC) - CHONG SENG KIAT
 // ─────────────────────────────────────────────
 enum class IncDecOp { INC, DEC };
 
@@ -455,7 +455,7 @@ public:
 };
 
 // ─────────────────────────────────────────────
-//  PushInstruction  (PUSH)
+//  PushInstruction  (PUSH) - CHONG SENG KIAT
 // ─────────────────────────────────────────────
 class PushInstruction : public Instruction {
 public:
@@ -478,7 +478,7 @@ public:
 };
 
 // ─────────────────────────────────────────────
-//  PopInstruction  (POP)
+//  PopInstruction  (POP) - CHONG SENG KIAT
 // ─────────────────────────────────────────────
 class PopInstruction : public Instruction {
 public:
